@@ -13,6 +13,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(autoware_vehicle_msgs REQUIRED)
 find_package(tier4_vehicle_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 
 add_executable(throttle_processing src/throttle_processing.cpp)
 target_include_directories(throttle_processing PUBLIC
@@ -27,6 +28,7 @@ ament_target_dependencies(
   "autoware_vehicle_msgs"
   "tier4_vehicle_msgs"
   "geometry_msgs"
+  "tf2"
 )
 
 install(TARGETS throttle_processing
