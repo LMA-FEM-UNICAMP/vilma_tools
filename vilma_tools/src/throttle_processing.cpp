@@ -13,7 +13,7 @@
 #include <tf2/LinearMath/Quaternion.hpp>
 #include <tf2/LinearMath/Matrix3x3.hpp>
 
-#include "vilma_tools/vilma_ma_labeling.hpp"
+#include "vilma_interface/vilma_ma_labeling.hpp"
 
 #include <deque>
 #include <cmath>
