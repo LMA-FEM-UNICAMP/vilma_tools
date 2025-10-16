@@ -21,6 +21,7 @@
 
 #define MA_SIZE 10
 #define BRAKE_DEADBAND 5.0
+#define USER_THROTTLE_DEADBAND 0.1
 
 #define RAD2DEG(x) ((x) * 180.0 / M_PI)
 
@@ -51,10 +52,10 @@ public:
 
     double roll, pitch, yaw;
 
-    initial_imu_orientation_.setX(-0.04250389939772266);
-    initial_imu_orientation_.setY(0.036776283188424894);
-    initial_imu_orientation_.setZ(0.676468632448613);
-    initial_imu_orientation_.setW(0.47291227511334805);
+    initial_imu_orientation_.setX(-0.0306615918445582);
+    initial_imu_orientation_.setY(0.002520017798938282);
+    initial_imu_orientation_.setZ(0.6404512073246108);
+    initial_imu_orientation_.setW(-0.7668619974060149);
 
     tf2::Matrix3x3(initial_imu_orientation_).getRPY(roll, pitch, yaw);
     initial_imu_orientation_.setRPY(roll, pitch, 0.0);
@@ -96,30 +97,33 @@ void ThrottleProcessing::sensors_ma_callback(const std_msgs::msg::Float64MultiAr
 {
 
   //* Get throttle value filtered
-  double throttle_value = std::max(0.0, msg->data[SensorsMA::GAS_USER_VALUE]);
+  double throttle_value = std::max(0.0, msg->data[SensorsMA::GAS_VALUE]);
 
-  if (throttle_value_buffer_.size() >= MA_SIZE)
-  {
-    throttle_value_buffer_.pop_front();
-    throttle_value_buffer_.push_back(throttle_value);
+  // if (throttle_value_buffer_.size() >= MA_SIZE)
+  // {
+  //   throttle_value_buffer_.pop_front();
+  //   throttle_value_buffer_.push_back(throttle_value);
 
-    throttle_value = std::accumulate(throttle_value_buffer_.begin(), throttle_value_buffer_.end(), 0.0) / throttle_value_buffer_.size();
-  }
-  else
-  {
-    throttle_value_buffer_.push_back(throttle_value);
-    received_new_ma_data_flg_ = false;
-    return;
-  }
+  //   throttle_value = std::accumulate(throttle_value_buffer_.begin(), throttle_value_buffer_.end(), 0.0) / throttle_value_buffer_.size();
+  // }
+  // else
+  // {
+  //   throttle_value_buffer_.push_back(throttle_value);
+  //   received_new_ma_data_flg_ = false;
+  //   return;
+  // }
+
 
   throttle_value_ = throttle_value;
 
   //* Just set throttle if brake is not pressed
   double brake_value = msg->data[SensorsMA::BRAKE_USER_PRESSURE];
+  double user_throttle_value = msg->data[SensorsMA::GAS_USER_VALUE];
 
-  if (brake_value > BRAKE_DEADBAND)
+  if (brake_value > BRAKE_DEADBAND || user_throttle_value > USER_THROTTLE_DEADBAND)
   {
     received_new_ma_data_flg_ = false;
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Braking, invalidating throttle data...");
     return;
   }
 
@@ -207,8 +211,12 @@ void ThrottleProcessing::publish_data()
   linear_acceleration.setY(imu_msg_.linear_acceleration.y);
   linear_acceleration.setZ(imu_msg_.linear_acceleration.z);
 
+  RCLCPP_INFO(this->get_logger(), "\n ax = %lf \n ay = %lf \n az = %lf \n ", linear_acceleration.getX(), linear_acceleration.getY(), linear_acceleration.getZ());
+
   // Transforming linear acceleration to base_link frame
-  linear_acceleration = tf2::Matrix3x3(initial_imu_orientation_).inverse() * linear_acceleration;
+  linear_acceleration = tf2::Matrix3x3(initial_imu_orientation_) * linear_acceleration;
+
+  RCLCPP_INFO(this->get_logger(), "\n ax = %lf \n ay = %lf \n az = %lf \n ", linear_acceleration.getX(), linear_acceleration.getY(), linear_acceleration.getZ());
 
   // Getting longitudinal acceleration as the acceleration in the plane, once the vehicle is driving in straight line.
   longitudinal_acceleration_ = sqrt(linear_acceleration.getX() * linear_acceleration.getX() + linear_acceleration.getY() * linear_acceleration.getY());
@@ -233,6 +241,7 @@ void ThrottleProcessing::publish_data()
   velocity_msg.longitudinal_velocity = longitudinal_speed_;
   velocity_status_pub_->publish(velocity_msg);
 
+  RCLCPP_INFO(this->get_logger(), "Longitudinal acceleration: %lf m/s²", longitudinal_acceleration_);
   imu_msg.linear_acceleration.x = longitudinal_acceleration_;
   imu_pub_->publish(imu_msg);
 
