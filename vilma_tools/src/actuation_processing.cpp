@@ -17,8 +17,9 @@
 #include "vilma_interface/vilma_ma_labeling.hpp"
 
 #include <deque>
+
+#define _USE_MATH_DEFINES
 #include <cmath>
-// #include <iomanip>
 
 #define MA_SIZE 10
 #define BRAKE_DEADBAND 5.0
@@ -110,14 +111,20 @@ private:
 
 void ActuationProcessing::free_acceleration_callback(const geometry_msgs::msg::Vector3Stamped::SharedPtr msg)
 {
+
+  double fb_module = 0.0;
+  double fb_azimuth = 0.0;
+  int a_x_signal = 0.0;
+
   free_acc_msg_.header = msg->header;
+  
+  fb_module = sqrt((msg->vector.x * msg->vector.x) + (msg->vector.y * msg->vector.y) + (msg->vector.z * msg->vector.z));
 
-  free_acc_msg_.linear_acceleration.x = sqrt((msg->vector.x * msg->vector.x) + (msg->vector.y * msg->vector.y) + (msg->vector.z * msg->vector.z));
+  fb_azimuth = atan2(msg->vector.y, msg->vector.x);
 
-  if (0.0 == throttle_value_ || brake_value_ > 0.0)
-  {
-    free_acc_msg_.linear_acceleration.x *= -1.0;
-  }
+  a_x_signal = (abs(fb_azimuth) > M_PI/4) ? 1 : -1;
+
+  free_acc_msg_.linear_acceleration.x = fb_module * static_cast<double>(a_x_signal);
 }
 
 void ActuationProcessing::sensors_ma_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
