@@ -16,13 +16,13 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(vilma_interface REQUIRED)
 
-add_executable(throttle_processing src/throttle_processing.cpp)
-target_include_directories(throttle_processing PUBLIC
+add_executable(actuation_processing src/actuation_processing.cpp)
+target_include_directories(actuation_processing PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-target_compile_features(throttle_processing PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+target_compile_features(actuation_processing PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
 ament_target_dependencies(
-  throttle_processing
+  actuation_processing
   "std_msgs"
   "rclcpp"
   "sensor_msgs"
@@ -33,7 +33,7 @@ ament_target_dependencies(
   "vilma_interface"
 )
 
-install(TARGETS throttle_processing
+install(TARGETS actuation_processing
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
