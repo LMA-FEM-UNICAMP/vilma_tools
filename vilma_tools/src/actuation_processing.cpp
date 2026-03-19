@@ -46,7 +46,6 @@ public:
     velocity_status_pub_ = this->create_publisher<autoware_vehicle_msgs::msg::VelocityReport>("/velocity", 1);
     steering_status_pub_ = this->create_publisher<autoware_vehicle_msgs::msg::SteeringReport>("/steering", 1);
     pitch_pub_ = this->create_publisher<std_msgs::msg::Float32>("/pitch", 1);
-    imu_pub_ = this->create_publisher<sensor_msgs::msg::Imu>("/acceleration", 1);
     free_acceleration_pub_ = this->create_publisher<sensor_msgs::msg::Imu>("/acceleration_free_acc", 1);
 
     longitudinal_acceleration_ = 0.0;
@@ -55,12 +54,18 @@ public:
     longitudinal_speed_ = 0.0;
     received_new_ma_data_flg_ = false;
 
+    imu_buffer_size = 20;
+    sum_free_acceleration_.x = 0.0;
+    sum_free_acceleration_.y = 0.0;
+    sum_free_acceleration_.z = 0.0;
+
     double roll, pitch, yaw;
 
-    initial_imu_orientation_.setX(-0.05060253262254119);
-    initial_imu_orientation_.setY(0.04404715667834924);
-    initial_imu_orientation_.setZ(0.8233368926851585);
-    initial_imu_orientation_.setW(0.5633857294071006);
+    /// From vilma_tools/utils/initial_orientation.ipynb
+    initial_imu_orientation_.setX(0.017772222616075663);
+    initial_imu_orientation_.setY(0.02361333656873013);
+    initial_imu_orientation_.setZ(-0.15836639739314462);
+    initial_imu_orientation_.setW(0.9869376560477111);
 
     tf2::Matrix3x3(initial_imu_orientation_).getRPY(roll, pitch, yaw);
     initial_imu_orientation_.setRPY(roll, pitch, 0.0);
@@ -86,7 +91,6 @@ private:
 
   std_msgs::msg::Float64MultiArray state_ma_msg_;
   std_msgs::msg::Float64MultiArray sensors_ma_msg_;
-  sensor_msgs::msg::Imu imu_msg_;
   sensor_msgs::msg::Imu free_acc_msg_;
 
   double longitudinal_acceleration_;
@@ -99,8 +103,12 @@ private:
   bool received_new_ma_data_flg_;
   bool invalidate_data_flg_;
 
-  std::deque<double> throttle_value_buffer_;
+  std::deque<geometry_msgs::msg::Vector3Stamped> imu_buffer_;
+  geometry_msgs::msg::Vector3 average_free_acceleration_;
+  geometry_msgs::msg::Vector3 sum_free_acceleration_;
+  int imu_buffer_size;
   tf2::Quaternion initial_imu_orientation_;
+  tf2::Quaternion orientation;
 
   void sensors_ma_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void state_ma_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
@@ -109,29 +117,92 @@ private:
   void publish_data();
 };
 
+void ActuationProcessing::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg)
+{
+
+  // Current orientation
+  orientation.setX(msg->orientation.x);
+  orientation.setY(msg->orientation.y);
+  orientation.setZ(msg->orientation.z);
+  orientation.setW(msg->orientation.w);
+}
+
 void ActuationProcessing::free_acceleration_callback(const geometry_msgs::msg::Vector3Stamped::SharedPtr msg)
 {
+
+  imu_buffer_.push_front(*msg);
+
+  if (imu_buffer_.size() <= imu_buffer_size)
+  {
+    return;
+  }
+
+  sum_free_acceleration_.x += imu_buffer_.front().vector.x;
+  sum_free_acceleration_.y += imu_buffer_.front().vector.y;
+  sum_free_acceleration_.z += imu_buffer_.front().vector.z;
+
+  sum_free_acceleration_.x -= imu_buffer_.back().vector.x;
+  sum_free_acceleration_.y -= imu_buffer_.back().vector.y;
+  sum_free_acceleration_.z -= imu_buffer_.back().vector.z;
+  imu_buffer_.pop_back();
+
+  average_free_acceleration_.x = sum_free_acceleration_.x / static_cast<double>(imu_buffer_size);
+  average_free_acceleration_.y = sum_free_acceleration_.y / static_cast<double>(imu_buffer_size);
+  average_free_acceleration_.z = sum_free_acceleration_.z / static_cast<double>(imu_buffer_size);
+
+  free_acc_msg_.header = msg->header;
+
+  if (invalidate_data_flg_)
+  {
+    free_acc_msg_.linear_acceleration.x = 0.0;
+    free_acceleration_pub_->publish(free_acc_msg_);
+    return;
+  }
+
+  //* IMU processing
 
   double fb_module = 0.0;
   double fb_azimuth = 0.0;
   int a_x_signal = 0.0;
 
-  free_acc_msg_.header = msg->header;
+  //* > Getting longitudinal acceleration
+
+  tf2::Vector3 linear_acceleration;
+
+  linear_acceleration.setX(average_free_acceleration_.x);
+  linear_acceleration.setY(average_free_acceleration_.y);
+  linear_acceleration.setZ(average_free_acceleration_.z);
+
+  // Transforming linear acceleration to base_link frame
+  linear_acceleration = tf2::Matrix3x3(orientation).inverse() * tf2::Matrix3x3(initial_imu_orientation_).inverse() * linear_acceleration; /// (IMU -> Earth)^-1 * (IMU - > Vehicle)
+
+  fb_module = sqrt((linear_acceleration.getX() * linear_acceleration.getX()) + (linear_acceleration.getY() * linear_acceleration.getY()));
+
+  fb_azimuth = atan2(linear_acceleration.getY(), linear_acceleration.getX());
+
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "fb_azimuth: %lf degrees", RAD2DEG(fb_azimuth));
+  // RCLCPP_INFO(this->get_logger(), "fb_azimuth: %lf degrees", RAD2DEG(fb_azimuth));
   
-  fb_module = sqrt((msg->vector.x * msg->vector.x) + (msg->vector.y * msg->vector.y) + (msg->vector.z * msg->vector.z));
-
-  fb_azimuth = atan2(msg->vector.y, msg->vector.x);
-
-  a_x_signal = (abs(fb_azimuth) > M_PI/4) ? 1 : -1;
+  // a_x_signal = (sin(fb_azimuth) > 0.0) ? 1 : -1;
+  a_x_signal = (linear_acceleration.getY() > 0.0) ? 1 : -1;
 
   free_acc_msg_.linear_acceleration.x = fb_module * static_cast<double>(a_x_signal);
+
+  if (brake_value_ != 0.0 && free_acc_msg_.linear_acceleration.x > 0.0)
+  {
+    return;
+  }
+  
+
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Total free acceleration: %lf m/s²", free_acc_msg_.linear_acceleration.x);
+  free_acceleration_pub_->publish(free_acc_msg_);
 }
 
 void ActuationProcessing::sensors_ma_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
 {
 
   //* Get throttle value filtered
-  double throttle_value = std::max(0.0, msg->data[SensorsMA::GAS_USER_VALUE]);
+  double throttle_value = std::max(0.0, msg->data[SensorsMA::GAS_VALUE]);
   double brake_value = std::max(0.0, msg->data[SensorsMA::BRAKE_VALUE]);
   bool emergency_button = static_cast<int>(msg->data[SensorsMA::OPERATION_STATE]) >> 8 & 0b1;
 
@@ -142,11 +213,14 @@ void ActuationProcessing::sensors_ma_callback(const std_msgs::msg::Float64MultiA
   double user_brake_value = msg->data[SensorsMA::BRAKE_USER_PRESSURE];
   double user_throttle_value = msg->data[SensorsMA::GAS_USER_VALUE];
 
-  // if (user_brake_value > BRAKE_DEADBAND || user_throttle_value > USER_THROTTLE_DEADBAND || emergency_button)
-  if (user_brake_value > BRAKE_DEADBAND)
+  if (user_brake_value > BRAKE_DEADBAND || user_throttle_value > USER_THROTTLE_DEADBAND || emergency_button)
   {
     invalidate_data_flg_ = true;
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500, "User controlling, invalidating data...");
+  }
+  else
+  {
+    invalidate_data_flg_ = false;
   }
 
   //* Checking if state data arrived
@@ -180,96 +254,29 @@ void ActuationProcessing::state_ma_callback(const std_msgs::msg::Float64MultiArr
   }
 }
 
-void ActuationProcessing::imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg)
-{
-  imu_msg_ = *msg;
-}
-
 void ActuationProcessing::publish_data()
 {
-
-  //* IMU processing
-
-  //* > Compensar pitch com calibração inicial
-
-  tf2::Quaternion orientation;
-
-  double roll, pitch, yaw;
-
-  // Current orientation
-  orientation.setX(imu_msg_.orientation.x);
-  orientation.setY(imu_msg_.orientation.y);
-  orientation.setZ(imu_msg_.orientation.z);
-  orientation.setW(imu_msg_.orientation.w);
-
-  tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-  orientation.setRPY(roll, pitch, 0.0);
-
-  tf2::Matrix3x3(initial_imu_orientation_).getRPY(roll, pitch, yaw);
-
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "       Ref | roll: %lf, pitch: %lf, yaw: %lf ", RAD2DEG(roll), RAD2DEG(pitch), RAD2DEG(yaw));
-
-  tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "  Measured | roll: %lf, pitch: %lf, yaw: %lf ", RAD2DEG(roll), RAD2DEG(pitch), RAD2DEG(yaw));
-  // RCLCPP_INFO(this->get_logger(), "Before | x: %lf, y: %lf, z: %lf , w: %lf ", imu_msg_.orientation.x, imu_msg_.orientation.y, imu_msg_.orientation.z, imu_msg_.orientation.w);
-
-  // Current orientation transformed to base_link
-  orientation = initial_imu_orientation_.inverse() * orientation;
-
-  orientation.normalize();
-
-  tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Calibrated | roll: %lf, pitch: %lf, yaw: %lf ", RAD2DEG(roll), RAD2DEG(pitch), RAD2DEG(yaw));
-
-  pitch_angle_ = RAD2DEG(pitch);
-
-  //* > Getting longitudinal acceleration
-
-  tf2::Vector3 linear_acceleration;
-
-  linear_acceleration.setX(imu_msg_.linear_acceleration.x);
-  linear_acceleration.setY(imu_msg_.linear_acceleration.y);
-  linear_acceleration.setZ(imu_msg_.linear_acceleration.z);
-
-  // RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500, "\n ax = %lf \n ay = %lf \n az = %lf \n ", linear_acceleration.getX(), linear_acceleration.getY(), linear_acceleration.getZ());
-
-  // Transforming linear acceleration to base_link frame
-  linear_acceleration = tf2::Matrix3x3(initial_imu_orientation_) * linear_acceleration;
-
-  // RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500, "\n ax = %lf \n ay = %lf \n az = %lf \n ", linear_acceleration.getX(), linear_acceleration.getY(), linear_acceleration.getZ());
-
-  // Getting longitudinal acceleration as the acceleration in the plane, once the vehicle is driving in straight line.
-  longitudinal_acceleration_ = sqrt(linear_acceleration.getX() * linear_acceleration.getX() + linear_acceleration.getY() * linear_acceleration.getY());
-
-  if (0.0 == throttle_value_ || brake_value_ > 0.0)
-  {
-    longitudinal_acceleration_ *= -1.0;
-  }
 
   //* Data publishing
 
   if (invalidate_data_flg_)
   {
-    invalidate_data_flg_ = false;
-
     throttle_value_ = 0.0;
     brake_value_ = 0.0;
     steering_angle_ = 0.0;
     longitudinal_speed_ = 0.0;
-    longitudinal_acceleration_ = 0.0;
     free_acc_msg_.linear_acceleration.x = 0.0;
-    pitch_angle_ = 0.0;
+
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "*** DROPPED DATA***");
+    return;
   }
 
   tier4_vehicle_msgs::msg::ActuationStatusStamped actuation_msg;
   autoware_vehicle_msgs::msg::SteeringReport steering_msg;
   autoware_vehicle_msgs::msg::VelocityReport velocity_msg;
   std_msgs::msg::Float32 pitch_msg;
-  sensor_msgs::msg::Imu imu_msg;
 
-  actuation_msg.status.accel_status = throttle_value_;
+  actuation_msg.status.accel_status = (brake_value_ == 0.0) ? throttle_value_ : 0.0;
   actuation_msg.status.brake_status = brake_value_;
 
   RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Throttle: %lf", actuation_msg.status.accel_status);
@@ -279,18 +286,12 @@ void ActuationProcessing::publish_data()
   steering_msg.steering_tire_angle = steering_angle_;
   steering_status_pub_->publish(steering_msg);
 
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Speed: %lf m/s", longitudinal_speed_);
   velocity_msg.longitudinal_velocity = longitudinal_speed_;
   velocity_status_pub_->publish(velocity_msg);
 
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Longitudinal acceleration: %lf m/s²", longitudinal_acceleration_);
-  imu_msg.linear_acceleration.x = longitudinal_acceleration_;
-  imu_pub_->publish(imu_msg);
-
-  pitch_msg.data = pitch_angle_;
+  pitch_msg.data = 0.0; // pitch_angle_;
   pitch_pub_->publish(pitch_msg);
-
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Total free acceleration: %lf m/s²", free_acc_msg_.linear_acceleration.x);
-  free_acceleration_pub_->publish(free_acc_msg_);
 }
 
 int main(int argc, char **argv)
