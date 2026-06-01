@@ -26,6 +26,7 @@
 #define USER_THROTTLE_DEADBAND 0.1
 
 #define RAD2DEG(x) ((x) * 180.0 / M_PI)
+#define DEG2RAD(x) ((x) / 180.0 * M_PI)
 
 class ActuationProcessing : public rclcpp::Node
 {
