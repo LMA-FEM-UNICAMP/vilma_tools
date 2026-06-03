@@ -8,7 +8,7 @@ from autoware_vehicle_msgs.msg import ControlModeReport
 
 import numpy as np
 
-AMPLITUDE = 0.2 # rad
+AMPLITUDE = 0.2 # norm
 FREQUENCY = 0.5 # Hz
 
 
@@ -48,7 +48,7 @@ class SteeringTester(Node):
 
         # * Assembly the code
 
-        control_command_msg.lateral.steering_tire_angle = AMPLITUDE * np.sin(2*np.pi * FREQUENCY * t)
+        control_command_msg.lateral.steering_tire_angle = AMPLITUDE * 0.4410 * np.sin(2*np.pi * FREQUENCY * t)
 
         self.control_command_pub_.publish(control_command_msg)
 
