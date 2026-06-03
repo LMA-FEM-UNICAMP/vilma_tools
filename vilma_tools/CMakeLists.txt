@@ -40,6 +40,7 @@ install(
   PROGRAMS
     scripts/average_orientation.py
     scripts/control_ref_generator.py
+    scripts/steering_tester.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
