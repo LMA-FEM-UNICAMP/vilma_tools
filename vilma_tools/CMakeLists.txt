@@ -39,6 +39,7 @@ install(TARGETS actuation_processing
 install(
   PROGRAMS
     scripts/average_orientation.py
+    scripts/control_ref_generator.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
